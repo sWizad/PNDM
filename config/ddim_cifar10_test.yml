@@ -47,9 +47,10 @@ Optim:
 
 Sample:
   mpi4py: False
-  test_code: False
-  batch_size: 512
+  test_code: True
+  batch_size: 100
   last_only: True
-  total_num: 12500
+  total_num: 99
+  name: 'ddim_cifar10_v19rk'
 
 

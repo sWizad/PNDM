@@ -1,0 +1,12 @@
+
+pip install fastprogress
+pip install mpi4py
+pip install pytorch-fid
+pip install typing-extensions
+pip install dill
+
+python main.py --runner sample --method F-PNDM --sample_speed 50 --device cuda --config ddim_cifar10_test.yml --image_path pretrained/results/test --model_path pretrained/models/ddim_cifar10.ckpt
+python main.py --runner test --device cuda --config ddim_cifar10_test.yml --image_path pretrained/results/test --model_path pretrained/models/ddim_cifar10.ckpt --method F-PNDM --sample_speed 50
+python main.py --runner opt --device cuda --config ddim_cifar10_test.yml --image_path pretrained/results/test --model_path pretrained/models/ddim_cifar10.ckpt --method F-PNDM --sample_speed 50
+
+python fid.py "pretrained/fids/fid_cifar10_train.npz" "pretrained/results/cifar10/DDIM/12"

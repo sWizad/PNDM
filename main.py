@@ -94,4 +94,8 @@ if __name__ == "__main__":
         runner.train()
     elif args.runner == 'sample':
         runner.sample_fid()
+    elif args.runner == 'test':
+        runner.sample_test()
+    elif args.runner == 'opt':
+        runner.optimiz_schd()
 

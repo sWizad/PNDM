@@ -24,9 +24,14 @@ import torch.utils.tensorboard as tb
 from scipy import integrate
 # from torchdiffeq import odeint
 from tqdm.auto import tqdm
+from fastprogress.fastprogress import master_bar, progress_bar
+from torchvision.utils import make_grid
 
 from dataset import get_dataset, inverse_data_transform
 from model.ema import EMAHelper
+import pdb
+from PIL import Image
+from torchvision.transforms import functional as TF
 
 
 def get_optim(params, config):
@@ -53,6 +58,8 @@ class Runner(object):
         self.schedule = schedule
         self.model = model
 
+        os.makedirs(self.args.image_path, exist_ok=True)
+        
     def train(self):
         schedule = self.schedule
         model = self.model
@@ -157,7 +164,7 @@ class Runner(object):
 
         skip = self.diffusion_step // self.sample_speed
         seq = range(0, self.diffusion_step, skip)
-        seq_next = [-1] + list(seq[:-1])
+        #seq_next = [-1] + list(seq[:-1])
         image_num = 0
 
         config = self.config['Dataset']
@@ -166,19 +173,74 @@ class Runner(object):
         else:
             my_iter = range(total_num // n + 1)
 
-        for _ in my_iter:
+        bar = master_bar(my_iter)
+        for _ in bar:
             noise = th.randn(n, config['channels'], config['image_size'],
                              config['image_size'], device=self.device)
 
             img = self.sample_image(noise, seq, model, pflow)
 
             img = inverse_data_transform(config, img)
-            for i in range(img.shape[0]):
-                if image_num+i > total_num:
-                    break
-                tvu.save_image(img[i], os.path.join(self.args.image_path, f"{mpi_rank}-{image_num+i}.png"))
+            if not self.config['Sample']['test_code']:
+                for i in range(img.shape[0]):
+                    if image_num+i > total_num:
+                        break
+                    tvu.save_image(img[i], os.path.join(self.args.image_path, f"{mpi_rank}-{image_num+i}.png"))
+            else:
+                grid = make_grid(img, nrow=int(np.sqrt(img.shape[0])))
+                tvu.save_image(grid, os.path.join(self.args.image_path, f"g{mpi_rank}-{image_num}.png"))
 
             image_num += n
+
+    def sample_test(self):
+        config = self.config['Sample']
+        mpi_rank = 0
+        worker_seed = 10
+
+        model = self.model
+        device = self.device
+        pflow = True if self.args.method == 'PF' else False
+
+        model.load_state_dict(th.load(self.args.model_path, map_location=device), strict=True)
+        #model.eval()
+
+        n = config['batch_size']
+        total_num = config['total_num']
+
+        skip = self.diffusion_step // self.sample_speed
+        seq = range(0, self.diffusion_step, skip)
+        #seq_next = [-1] + list(seq[:-1])
+        image_num = 0
+
+        config = self.config['Dataset']
+        if mpi_rank == 0:
+            my_iter = tqdm(range(total_num // n + 1), ncols=120)
+        else:
+            my_iter = range(total_num // n + 1)
+
+        np.random.seed(worker_seed)
+        th.manual_seed(worker_seed)
+
+        noise = th.randn(n, config['channels'], config['image_size'],
+                            config['image_size'], device=self.device)
+
+        img = self.sample_image(noise, seq, model, pflow)
+
+        img = inverse_data_transform(config, img)
+        grid = make_grid(img, nrow=int(np.sqrt(img.shape[0])))
+        tvu.save_image(grid, os.path.join(self.args.image_path, f"g{mpi_rank}-{image_num}.png"))
+
+        # check if it far from check point
+        file_name = self.config['Sample']['name']
+        img = Image.open(f"pretrained/results/test/{file_name}.png").convert('RGB')
+        tfimg = TF.to_tensor(img)
+        #pdb.set_trace()
+        mse = th.mean((grid - tfimg)**2)
+        psnr = 10 * th.log10(1/mse)
+        print("PSRN :",psnr, "MSE:", mse)
+        
+
+
 
     def sample_image(self, noise, seq, model, pflow=False):
         with th.no_grad():
@@ -199,12 +261,22 @@ class Runner(object):
 
             else:
                 imgs = [noise]
-                seq_next = [-1] + list(seq[:-1])
+                #pdb.set_trace()
 
                 start = True
                 n = noise.shape[0]
+                
+                seq_fornt = list(seq)
+                seq_next = [-1] + list(seq[:-1])
 
-                for i, j in zip(reversed(seq), reversed(seq_next)):
+                #seq_next = list(seq)
+                #seq_fornt = list(seq[1:]) + [self.diffusion_step-2]
+                itera = list(zip(reversed(seq_fornt), reversed(seq_next)))
+                #pdb.set_trace()
+
+
+                bar = progress_bar(itera)
+                for (i, j) in bar:
                     t = (th.ones(n) * i).to(self.device)
                     t_next = (th.ones(n) * j).to(self.device)
 
@@ -217,3 +289,71 @@ class Runner(object):
                 img = imgs[-1]
 
             return img
+
+
+    def optimiz_schd(self):
+        config = self.config['Sample']
+        mpi_rank = 0
+        worker_seed = 10
+
+        model = self.model
+        device = self.device
+        pflow = True if self.args.method == 'PF' else False
+
+        model.load_state_dict(th.load(self.args.model_path, map_location=device), strict=True)
+        model.eval()
+
+        n = config['batch_size']
+        total_num = config['total_num']
+
+        skip = self.diffusion_step // self.sample_speed
+        seq = range(0, self.diffusion_step, skip)
+        #seq_next = [-1] + list(seq[:-1])
+        image_num = 0
+        self.schedule.update_spd(self.sample_speed)
+
+        config = self.config['Dataset']
+        if mpi_rank == 0:
+            my_iter = tqdm(range(total_num // n + 1), ncols=120)
+        else:
+            my_iter = range(total_num // n + 1)
+
+        np.random.seed(worker_seed)
+        th.manual_seed(worker_seed)
+
+        noise = th.randn(n, config['channels'], config['image_size'],
+                            config['image_size'], device=self.device)
+        if True:
+            img = self.schedule.denoising_from_schedual(noise, model)      
+            img = inverse_data_transform(config, img)
+            grid = make_grid(img, nrow=int(np.sqrt(img.shape[0]))).cpu()
+            tvu.save_image(grid, os.path.join(self.args.image_path, f"g{mpi_rank}-{image_num+1}.png"))
+
+            # check if it far from check point
+            file_name = self.config['Sample']['name']
+            img = Image.open(f"pretrained/results/test/{file_name}.png").convert('RGB')
+            tfimg = TF.to_tensor(img)
+            mse = th.mean((grid - tfimg)**2)
+            psnr = 10 * th.log10(1/mse)
+            print("PSRN :",psnr, "MSE:", mse)   
+        #pdb.set_trace()      
+        noise2 = th.randn(n, config['channels'], config['image_size'],
+                            config['image_size'], device=self.device)
+        img0 = self.schedule.schedule_search(noise2, model,)
+
+        img0 = self.schedule.line_search((n, config['channels'], config['image_size'], config['image_size']),
+                            model,)
+
+        img = self.schedule.denoising_from_schedual(noise, model)  
+
+        img = inverse_data_transform(config, img)
+        grid = make_grid(img, nrow=int(np.sqrt(img.shape[0]))).cpu()
+        tvu.save_image(grid, os.path.join(self.args.image_path, f"g{mpi_rank}-{image_num}.png"))
+
+        # check if it far from check point
+        file_name = self.config['Sample']['name']
+        img = Image.open(f"pretrained/results/test/{file_name}.png").convert('RGB')
+        tfimg = TF.to_tensor(img)
+        mse = th.mean((grid - tfimg)**2)
+        psnr = 10 * th.log10(1/mse)
+        print("PSRN :",psnr, "MSE:", mse)
